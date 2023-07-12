@@ -11,6 +11,8 @@ __all__ = [
 ]
 
 import numpy as np
+from collections import defaultdict
+from itertools import product
 from qutip.core import data as _data
 from qutip import Qobj, QobjEvo, operator_to_vector
 from .mesolve import MESolver
@@ -21,27 +23,25 @@ from ..ui.progressbar import progress_bars
 from qutip.solver.floquet import fsesolve, FloquetBasis
 
 
-def _floquet_rate_matrix(floquet_basis,
-                         Nt,
-                         T,
-                         c_ops,
-                         c_op_rates,
-                         omega,
-                         time_sense=0):
+def _floquet_rate_matrix(
+    floquet_basis,
+    Nt,
+    c_ops,
+    c_op_rates,
+    time_sense=0
+):
     '''
     Parameters
     ----------
-    qe : list
-        List of Floquet quasienergies of the system.
-    tlist : numpy.ndarray
-        List of 2**n times distributes evenly over one period of system driving
+    floquet_basis : :class:`FloquetBasis`
+        The system Hamiltonian wrapped in a FloquetBasis object.
+    Nt : int
+        Power of 2, number of time to use for the fourrier transform.
     c_ops : list
         list of collapse operator matrices,used to calculate the Fourier
             Amplitudes for each rate matrix
     c_op_rates : list
         List of collapse operator rates/magnitudes.
-    omega : float
-        the sinusoidal time-dependance of the system
     time_sense : float 0-1,optional
         the time sensitivity/secular approximation restriction for this rate
             matrix as a multiple of the system frequency beatfreq. As far as
@@ -59,32 +59,32 @@ def _floquet_rate_matrix(floquet_basis,
     '''
     Hdim = len(floquet_basis.e_quasi)
 
-    time = T
+    time = floquet_basis.T
     dt = time / Nt
     tlist = np.linspace(0, time - dt, Nt)
+    omega = 2 * np.pi / time
 
     '''
     First,divide all quasienergies by omega to get everything in terms of
         omega.
     '''
 
-    def delta(a, ap, b, bp, l, lp):
-        return ((floquet_basis.e_quasi[a] - floquet_basis.e_quasi[ap])
-                - (floquet_basis.e_quasi[b] - floquet_basis.e_quasi[bp])) \
-            / (list(omega.values())[0]) \
-            + (l - lp)
+    delta_m = np.add.outer(floquet_basis.e_quasi, -floquet_basis.e_quasi)
+    delta_m = np.add.outer(delta_m, -delta_m)
+    delta_m /= omega
 
-    total_R_tensor = {}
+    total_R_tensor = defaultdict(lambda : 0)
     for cdx, c_op in enumerate(c_ops):
         '''
         These lines transform the lowering operator into the Floquet mode
             basis
         '''
-        fmodes = np.stack([np.stack(
-            [i.full() for i in floquet_basis.mode(t)])
-            for t in tlist])[..., 0]
-        fmodes_ct = np.transpose(fmodes, (0, 2, 1)).conj()
-        c_op_Floquet_basis = (fmodes_ct @ c_op.full() @ fmodes)
+
+        fmodes = [floquet_basis.mode(t, data=True).transpose() for t in tlist]
+        c_op_Floquet_basis = np.array([
+            (mode.adjoint() @ c_op.data @ mode).as_ndarray()
+            for mode in fmodes
+        ])
 
         '''
         Performing the 1-D FFT to find the Fourier amplitudes of this specific
@@ -92,73 +92,60 @@ def _floquet_rate_matrix(floquet_basis,
 
         Divided by the length of tlist for normalization
         '''
-        c_op_Fourier_amplitudes_list = np.array(np.fft.fft(
-            c_op_Floquet_basis, axis=0) / len(tlist))
+        c_op_Fourier_amplitudes_list = np.fft.fft(c_op_Floquet_basis, axis=0) / len(tlist)
 
         '''
         Next,I want to find all rate-product terms that are nonzero
         '''
-        rate_products = np.einsum('lab,kcd->abcdlk',
-                                  c_op_Fourier_amplitudes_list, np.conj(c_op_Fourier_amplitudes_list))
-        rate_products_idx = np.argwhere(abs(rate_products) != 0)
 
-        args_key = list(omega.keys())[0]
-        valid_indices = [tuple(indices) for indices in rate_products_idx
-                         if delta(*tuple(indices)) == 0
-                         or abs((rate_products[tuple(indices)]
-                                 / (omega[args_key]
-                                    * delta(*tuple(indices))))**(-1)) <= time_sense
-                         and abs(omega[args_key] * delta(*tuple(indices))) < Nt / 2]
+        for l, k in product(np.arange(Nt), repeat=2):
+            delta_shift = delta_m + (l - k)
+            mask = {}
+            if time_sense <= 0.:
+                mask[0] = delta_shift == 0
+                if not np.any(mask):
+                    continue
+                rate_products = np.multiply.outer(
+                    c_op_Fourier_amplitudes_list[l],
+                    np.conj(c_op_Fourier_amplitudes_list)[k]
+                ) * c_op_rates[cdx]
+            else:
+                rate_products = np.multiply.outer(
+                    c_op_Fourier_amplitudes_list[l],
+                    np.conj(c_op_Fourier_amplitudes_list)[k]
+                )
+                cmp_array = np.minimum(np.abs(rate_products) * time_sense, Nt/2)
 
-        delta_dict = {}
-        for indices in valid_indices:
-            try:
-                delta_dict[delta(*indices)].append(indices)
-            except KeyError:
-                delta_dict[delta(*indices)] = [indices]
 
-        for key in delta_dict.keys():
-            mask_array = np.zeros((Hdim, Hdim, Hdim, Hdim, Nt, Nt))
-            for indices in delta_dict[key]:
-                mask_array[indices] = True
-            valid_c_op_products = rate_products * mask_array
+                included_deltas = np.abs(delta_shift) * omega <= cmp_array
+                if not np.any(included_deltas):
+                    continue
+                keys = np.unique(delta_shift[included_deltas])
+                rate_products *= c_op_rates[cdx]
+                for key in keys:
+                    mask[key] = np.logical_and(delta_shift == key, included_deltas)
 
-            # using c = ap,d = bp,k=lp
-            flime_FirstTerm = c_op_rates[cdx] \
-                * np.einsum('abcdlk,ma,nc,pb,qd->mnpq',
-                            valid_c_op_products,
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim))
+            for key in mask.keys():
+                valid_c_op_products = rate_products * mask[key]
+                I_ = np.eye(Hdim, Hdim)
 
-            flime_SecondTerm = c_op_rates[cdx] \
-                * np.einsum('abcdlk,ac,md,pb,qn->mnpq',
-                            valid_c_op_products,
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim))
+                # using c = ap,d = bp,k=lp
+                flime_FirstTerm = np.transpose(valid_c_op_products, [0,2,1,3]).reshape(Hdim**2, Hdim**2)
+                tmp = np.trace(valid_c_op_products, axis1=0, axis2=2)
+                flime_SecondTerm = np.kron(tmp.T, I_)
+                flime_ThirdTerm = np.kron(I_, tmp)
 
-            flime_ThirdTerm = c_op_rates[cdx] \
-                * np.einsum('abcdlk,ac,nb,pm,qd->mnpq',
-                            valid_c_op_products,
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim),
-                            np.eye(Hdim, Hdim))
-            try:
-                total_R_tensor[key] += np.reshape(flime_FirstTerm - (1 / 2)
-                                                  * (flime_SecondTerm +
-                                                     flime_ThirdTerm),
-                                                  (Hdim**2, Hdim**2))
-            except KeyError:
-                total_R_tensor[key] = np.reshape(flime_FirstTerm - (1 / 2)
-                                                 * (flime_SecondTerm +
-                                                    flime_ThirdTerm),
-                                                 (Hdim**2, Hdim**2))
+                total_R_tensor[key] += flime_FirstTerm - (0.5) * (flime_SecondTerm + flime_ThirdTerm)
+
     return total_R_tensor
 
+
+class _Phase:
+    def __init__(self, w):
+        self.w = w
+
+    def __call__(self, t):
+        return np.exp(1j * self.w * t)
 
 def flimesolve(
         H,
@@ -355,9 +342,6 @@ class FLiMESolver(MESolver):
         List of number_of_periods*2**n times distributed evenly over the
             entire duration of Hamiltonian driving
 
-    Hargs : list
-        The time dependence of the Hamiltonian
-
    c_ops_and_rates : list of :class:`qutip.Qobj`.
        List of lists of [collapse operator, collapse operator rate] pairs
 
@@ -432,24 +416,32 @@ class FLiMESolver(MESolver):
                 self.Nt = 2**4
         self.time_sense = time_sense
 
-        RateDic = _floquet_rate_matrix(
+        rateDict = _floquet_rate_matrix(
             floquet_basis,
             self.Nt,
-            self.floquet_basis.T,
             c_ops,
             c_op_rates,
-            Hargs,
-            time_sense=time_sense)
-        Rate_Qobj_list = [Qobj(
-            RateMat, dims=[self.floquet_basis.U(0).dims, self.floquet_basis.U(0).dims], type="super", superrep="super", copy=False
-        ) for RateMat in RateDic.values()]
-        R0 = Rate_Qobj_list[0]
+            time_sense=time_sense
+        )
 
-        Rt_timedep_pairs = [list(
-            [Rate_Qobj_list[idx], 'exp(1j*' + str(list(
-                RateDic.keys())[idx]
-                * list(Hargs.values())[0]) + '*t)'])
-            for idx in range(0, len(Rate_Qobj_list))]
+        dims = [self.floquet_basis.U(0).dims] * 2
+        rateDict = {
+            key: Qobj(
+                RateMat, dims=dims, type="super", superrep="super", copy=False
+            )
+            for key, RateMat in rateDict.items()
+        }
+
+        R0 = rateDict[0]
+
+        omega = 2 * np.pi / floquet_basis.T
+
+        Rt_timedep_pairs = [
+            [rate_matrix, _Phase(omega * key)]
+            for key, rateMat in rateDict.items()
+            if key != 0.
+        ]
+
         Rate_matrix_timedep_list = [R0, *Rt_timedep_pairs[1::]]
 
         if time_sense == 0:
