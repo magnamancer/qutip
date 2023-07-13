@@ -137,6 +137,14 @@ def _floquet_rate_matrix(
 
                 total_R_tensor[key] += flime_FirstTerm - (0.5) * (flime_SecondTerm + flime_ThirdTerm)
 
+    dims = [floquet_basis.U(0).dims] * 2
+    total_R_tensor = {
+        key: Qobj(
+            RateMat, dims=dims, type="super", superrep="super", copy=False
+        )
+        for key, RateMat in total_R_tensor.items()
+    }
+
     return total_R_tensor
 
 
@@ -146,6 +154,7 @@ class _Phase:
 
     def __call__(self, t):
         return np.exp(1j * self.w * t)
+
 
 def flimesolve(
         H,
@@ -424,14 +433,6 @@ class FLiMESolver(MESolver):
             time_sense=time_sense
         )
 
-        dims = [self.floquet_basis.U(0).dims] * 2
-        rateDict = {
-            key: Qobj(
-                RateMat, dims=dims, type="super", superrep="super", copy=False
-            )
-            for key, RateMat in rateDict.items()
-        }
-
         R0 = rateDict[0]
 
         omega = 2 * np.pi / floquet_basis.T
@@ -442,7 +443,7 @@ class FLiMESolver(MESolver):
             if key != 0.
         ]
 
-        Rate_matrix_timedep_list = [R0, *Rt_timedep_pairs[1::]]
+        Rate_matrix_timedep_list = [R0, *Rt_timedep_pairs]
 
         if time_sense == 0:
             self.solver_options["method"] = "diag"
