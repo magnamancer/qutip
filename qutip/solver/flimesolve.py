@@ -670,12 +670,10 @@ class FLiMESolver(MESolver):
         monomat = self.RateDic[0].full()
         val, vec = np.linalg.eig(monomat)
 
-        idx = np.where(np.amin(abs(val)))
+        idx = np.where(abs(val) == np.amin(abs(val)))
         state = Qobj(
             np.square(
-                np.reshape(
-                    np.flip(vec[:, *idx]), (self.Hdim, self.Hdim), order="F"
-                )
+                np.reshape((vec[:, *idx]), (self.Hdim, self.Hdim), order="F")
             )
         )
 
