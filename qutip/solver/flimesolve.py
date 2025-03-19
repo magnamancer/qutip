@@ -125,6 +125,7 @@ def _floquet_rate_matrix(
     Hdim = len(floquet_basis.e_quasi)
 
     total_R_tensor = {}
+    total_R_tensor_old = {}
 
     for cdx, c_op in enumerate(c_ops):
 
@@ -136,7 +137,7 @@ def _floquet_rate_matrix(
             c_op_Fourier_amplitudes_list,
             np.conj(c_op_Fourier_amplitudes_list),
         )
-        rate_products_idx = np.argwhere(rate_products > 1e-6)
+        rate_products_idx = np.argwhere(rate_products)
 
         """
         Finding all terms that are either DC or that are "important" enough
@@ -180,6 +181,19 @@ def _floquet_rate_matrix(
             flime_ThirdTerm = np.zeros(
                 (Hdim, Hdim, Hdim, Hdim), dtype="complex"
             )
+            flime_FourthTerm = np.zeros(
+                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
+            )
+
+            flime_FirstTerm_old = np.zeros(
+                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
+            )
+            flime_SecondTerm_old = np.zeros(
+                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
+            )
+            flime_ThirdTerm_old = np.zeros(
+                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
+            )
             for indices in valid_c_op_prods_list:
                 a = indices[0]
                 b = indices[1]
@@ -192,63 +206,73 @@ def _floquet_rate_matrix(
                     for n in range(Hdim):
                         for p in range(Hdim):
                             for q in range(Hdim):
+                                c_prods = c_op_Fourier_amplitudes_list[
+                                    k, a, b
+                                ] * np.conj(
+                                    c_op_Fourier_amplitudes_list[kp, ap, bp]
+                                )
+
+                                gam_plus = power_spectrum(powfreqs(a, b, k))
+                                gam_minus = power_spectrum(powfreqs(a, b, -k))
+
+                                gam_plus_prime = power_spectrum(
+                                    powfreqs(ap, bp, kp)
+                                )
+                                gam_minus_prime = power_spectrum(
+                                    powfreqs(ap, bp, -kp)
+                                )
 
                                 flime_FirstTerm[m, n, p, q] += (
-                                    power_spectrum(powfreqs(a, b, k))
-                                    + power_spectrum(powfreqs(ap, bp, kp))
-                                ) * (
-                                    c_op_Fourier_amplitudes_list[k, a, b]
-                                    * np.conj(
-                                        c_op_Fourier_amplitudes_list[
-                                            kp, ap, bp
-                                        ]
-                                    )
-                                    * (
-                                        kron(m, a)
-                                        * kron(n, ap)
-                                        * kron(p, b)
-                                        * kron(q, bp)
-                                    )
+                                    gam_plus
+                                    * c_prods
+                                    * kron(b, p)
+                                    * kron(q, bp)
+                                    * kron(m, a)
+                                    * kron(ap, n)
                                 )
 
                                 flime_SecondTerm[m, n, p, q] += (
-                                    power_spectrum(powfreqs(a, b, k))
-                                ) * (
-                                    c_op_Fourier_amplitudes_list[k, a, b]
-                                    * np.conj(
-                                        c_op_Fourier_amplitudes_list[
-                                            kp, ap, bp
-                                        ]
-                                    )
-                                    * (
-                                        kron(a, ap)
-                                        * kron(m, bp)
-                                        * kron(p, b)
-                                        * kron(q, n)
-                                    )
+                                    gam_minus_prime
+                                    * c_prods
+                                    * kron(b, p)
+                                    * kron(q, bp)
+                                    * kron(m, a)
+                                    * kron(ap, n)
                                 )
 
                                 flime_ThirdTerm[m, n, p, q] += (
-                                    +power_spectrum(powfreqs(ap, bp, kp))
-                                ) * (
-                                    c_op_Fourier_amplitudes_list[k, a, b]
-                                    * np.conj(
-                                        c_op_Fourier_amplitudes_list[
-                                            kp, ap, bp
-                                        ]
-                                    )
-                                    * (
-                                        kron(a, ap)
-                                        * kron(n, b)
-                                        * kron(p, m)
-                                        * kron(q, bp)
-                                    )
+                                    gam_plus
+                                    * c_prods
+                                    * kron(m, bp)
+                                    * kron(q, n)
+                                    * kron(ap, a)
+                                    * kron(b, p)
                                 )
 
-            total_R_tensor[key] = np.reshape(
-                flime_FirstTerm - (flime_SecondTerm + flime_ThirdTerm),
-                (Hdim**2, Hdim**2),
-            )
+                                flime_FourthTerm[m, n, p, q] += (
+                                    gam_minus_prime
+                                    * c_prods
+                                    * kron(q, bp)
+                                    * kron(ap, a)
+                                    * kron(m, p)
+                                    * kron(b, n)
+                                )
+            try:
+                total_R_tensor[key] += (1 / 2) * np.reshape(
+                    flime_FirstTerm
+                    + flime_SecondTerm
+                    - flime_ThirdTerm
+                    - flime_FourthTerm,
+                    (Hdim**2, Hdim**2),
+                )
+            except KeyError:
+                total_R_tensor[key] = (1 / 2) * np.reshape(
+                    flime_FirstTerm
+                    + flime_SecondTerm
+                    - flime_ThirdTerm
+                    - flime_FourthTerm,
+                    (Hdim**2, Hdim**2),
+                )
 
     return total_R_tensor
 
@@ -555,7 +579,7 @@ class FLiMESolver(MESolver):
             def power_spectrum(omega):
                 # Value of 0.5 brings the ME to the Lindblad equation if no
                 # power spectrum is supplied
-                return 0.5
+                return 1.0
 
         self._Nt = Nt
         self.options = options
