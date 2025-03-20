@@ -53,7 +53,7 @@ def _c_op_Fourier_amplitudes(floquet_basis, tlist, c_op):
 
 
 def _floquet_rate_matrix(
-    floquet_basis, Nt, c_ops, time_sense=0, power_spectrum=False
+    floquet_basis, Nt, c_ops, time_sense=0, power_spectrum=None
 ):
     """
     Parameters
@@ -96,6 +96,10 @@ def _floquet_rate_matrix(
     Defining a kronecker delta function because I forgot numpy has one until now,
         as I write this note
     """
+    if power_spectrum == None:
+
+        def power_spectrum(omega):
+            return 1
 
     def kron(a, b):
         if a == b:
@@ -125,33 +129,48 @@ def _floquet_rate_matrix(
     Hdim = len(floquet_basis.e_quasi)
 
     total_R_tensor = {}
-    total_R_tensor_old = {}
 
     for cdx, c_op in enumerate(c_ops):
 
         c_op_Fourier_amplitudes_list = _c_op_Fourier_amplitudes(
             floquet_basis, tlist, c_op
         )
-        rate_products = np.einsum(
-            "lab,kcd->abcdlk",
-            c_op_Fourier_amplitudes_list,
-            np.conj(c_op_Fourier_amplitudes_list),
-        )
-        rate_products_idx = np.argwhere(rate_products)
+        indices_list = np.argwhere(np.ones((Hdim, Hdim, Hdim, Hdim, Nt, Nt)))
+        # This shifts the indices in the indices list to call the correct k elements
+        for idx in indices_list:
+            idx[4] = idx[4] - int(Nt / 2)
+            idx[5] = idx[5] - int(Nt / 2)
 
         """
         Finding all terms that are either DC or that are "important" enough
             to include as decided by the Relative Secular Approximation
         """
+
+        # valid_indices = [
+        #     tuple(idx)
+        #     for idx in indices_list
+        #     if delta(*idx) == 0
+        #     or abs(
+        #         (
+        #             (
+        #                 c_op_Fourier_amplitudes_list[idx[4], idx[0], idx[1]]
+        #                 * np.conj(
+        #                     c_op_Fourier_amplitudes_list[
+        #                         idx[5], idx[2], idx[3]
+        #                     ]
+        #                 )
+        #             )
+        #             / delta(*idx)
+        #         )
+        #         ** (-1)
+        #     )
+        #     <= time_sense
+        # ]
+
         valid_indices = [
-            tuple(indices)
-            for indices in rate_products_idx
-            if delta(*tuple(indices)) == 0
-            or abs(
-                (rate_products[tuple(indices)] / delta(*tuple(indices)))
-                ** (-1)
-            )
-            <= time_sense
+            tuple(idx)
+            for idx in indices_list
+            if abs(delta(*idx)) <= time_sense
         ]
 
         """
@@ -203,16 +222,10 @@ def _floquet_rate_matrix(
                                     c_op_Fourier_amplitudes_list[kp, ap, bp]
                                 )
 
-                                gam_plus = power_spectrum(powfreqs(a, b, k))
-                                gam_minus = power_spectrum(
-                                    powfreqs(-a, -b, -k)
-                                )
+                                gam_plus = power_spectrum(powfreqs(a, b, -k))
 
-                                gam_plus_prime = power_spectrum(
-                                    powfreqs(ap, bp, kp)
-                                )
                                 gam_minus_prime = power_spectrum(
-                                    powfreqs(-ap, -bp, -kp)
+                                    powfreqs(bp, bp, -kp)
                                 )
 
                                 flime_FirstTerm[m, n, p, q] += (
@@ -250,22 +263,32 @@ def _floquet_rate_matrix(
                                     * kron(m, p)
                                     * kron(b, n)
                                 )
+
             try:
                 total_R_tensor[key] += (1 / 2) * np.reshape(
-                    flime_FirstTerm
-                    + flime_SecondTerm
-                    - flime_ThirdTerm
-                    - flime_FourthTerm,
+                    (
+                        flime_FirstTerm
+                        # + flime_SecondTerm
+                        # - flime_ThirdTerm
+                        # - flime_FourthTerm
+                    ),
                     (Hdim**2, Hdim**2),
                 )
             except KeyError:
                 total_R_tensor[key] = (1 / 2) * np.reshape(
-                    flime_FirstTerm
-                    + flime_SecondTerm
-                    - flime_ThirdTerm
-                    - flime_FourthTerm,
+                    (
+                        flime_FirstTerm
+                        # + flime_SecondTerm
+                        # - flime_ThirdTerm
+                        # - flime_FourthTerm
+                    ),
                     (Hdim**2, Hdim**2),
                 )
+
+    test = []
+    for key in sorted(total_R_tensor.keys()):
+        test.append(total_R_tensor[key])
+    test = np.stack(test)
 
     return total_R_tensor
 
