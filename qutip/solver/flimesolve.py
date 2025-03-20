@@ -123,7 +123,7 @@ def _floquet_rate_matrix(
     """
 
     def powfreqs(a, b, k):
-        return floquet_basis.e_quasi[a] - floquet_basis.e_quasi[b] + k * omega
+        return floquet_basis.e_quasi[a] - floquet_basis.e_quasi[b] - k * omega
 
     Nt = len(tlist)
     Hdim = len(floquet_basis.e_quasi)
@@ -146,31 +146,25 @@ def _floquet_rate_matrix(
             to include as decided by the Relative Secular Approximation
         """
 
-        # valid_indices = [
-        #     tuple(idx)
-        #     for idx in indices_list
-        #     if delta(*idx) == 0
-        #     or abs(
-        #         (
-        #             (
-        #                 c_op_Fourier_amplitudes_list[idx[4], idx[0], idx[1]]
-        #                 * np.conj(
-        #                     c_op_Fourier_amplitudes_list[
-        #                         idx[5], idx[2], idx[3]
-        #                     ]
-        #                 )
-        #             )
-        #             / delta(*idx)
-        #         )
-        #         ** (-1)
-        #     )
-        #     <= time_sense
-        # ]
-
         valid_indices = [
             tuple(idx)
             for idx in indices_list
-            if abs(delta(*idx)) <= time_sense
+            if delta(*idx) == 0
+            or abs(
+                (
+                    (
+                        c_op_Fourier_amplitudes_list[idx[4], idx[0], idx[1]]
+                        * np.conj(
+                            c_op_Fourier_amplitudes_list[
+                                idx[5], idx[2], idx[3]
+                            ]
+                        )
+                    )
+                    / delta(*idx)
+                )
+                ** (-1)
+            )
+            <= time_sense
         ]
 
         """
@@ -222,10 +216,10 @@ def _floquet_rate_matrix(
                                     c_op_Fourier_amplitudes_list[kp, ap, bp]
                                 )
 
-                                gam_plus = power_spectrum(powfreqs(a, b, -k))
+                                gam_plus = power_spectrum(powfreqs(a, b, k))
 
                                 gam_minus_prime = power_spectrum(
-                                    powfreqs(bp, bp, -kp)
+                                    powfreqs(bp, bp, kp)
                                 )
 
                                 flime_FirstTerm[m, n, p, q] += (
@@ -268,9 +262,9 @@ def _floquet_rate_matrix(
                 total_R_tensor[key] += (1 / 2) * np.reshape(
                     (
                         flime_FirstTerm
-                        # + flime_SecondTerm
-                        # - flime_ThirdTerm
-                        # - flime_FourthTerm
+                        + flime_SecondTerm
+                        - flime_ThirdTerm
+                        - flime_FourthTerm
                     ),
                     (Hdim**2, Hdim**2),
                 )
@@ -278,17 +272,12 @@ def _floquet_rate_matrix(
                 total_R_tensor[key] = (1 / 2) * np.reshape(
                     (
                         flime_FirstTerm
-                        # + flime_SecondTerm
-                        # - flime_ThirdTerm
-                        # - flime_FourthTerm
+                        + flime_SecondTerm
+                        - flime_ThirdTerm
+                        - flime_FourthTerm
                     ),
                     (Hdim**2, Hdim**2),
                 )
-
-    test = []
-    for key in sorted(total_R_tensor.keys()):
-        test.append(total_R_tensor[key])
-    test = np.stack(test)
 
     return total_R_tensor
 
@@ -590,12 +579,6 @@ class FLiMESolver(MESolver):
 
         if not all(isinstance(c_op, Qobj) for c_op in c_ops):
             raise TypeError("c_ops must be type Qobj")
-        if power_spectrum == None:
-
-            def power_spectrum(omega):
-                # Value of 0.5 brings the ME to the Lindblad equation if no
-                # power spectrum is supplied
-                return 1.0
 
         self._Nt = Nt
         self.options = options
