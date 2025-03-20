@@ -185,15 +185,6 @@ def _floquet_rate_matrix(
                 (Hdim, Hdim, Hdim, Hdim), dtype="complex"
             )
 
-            flime_FirstTerm_old = np.zeros(
-                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
-            )
-            flime_SecondTerm_old = np.zeros(
-                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
-            )
-            flime_ThirdTerm_old = np.zeros(
-                (Hdim, Hdim, Hdim, Hdim), dtype="complex"
-            )
             for indices in valid_c_op_prods_list:
                 a = indices[0]
                 b = indices[1]
@@ -213,13 +204,15 @@ def _floquet_rate_matrix(
                                 )
 
                                 gam_plus = power_spectrum(powfreqs(a, b, k))
-                                gam_minus = power_spectrum(powfreqs(a, b, -k))
+                                gam_minus = power_spectrum(
+                                    powfreqs(-a, -b, -k)
+                                )
 
                                 gam_plus_prime = power_spectrum(
                                     powfreqs(ap, bp, kp)
                                 )
                                 gam_minus_prime = power_spectrum(
-                                    powfreqs(ap, bp, -kp)
+                                    powfreqs(-ap, -bp, -kp)
                                 )
 
                                 flime_FirstTerm[m, n, p, q] += (
